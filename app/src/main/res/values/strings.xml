@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">IPTV Live Channels</string>
+    <string name="tv_input_label">IPTV Live Channels</string>
+
+    <string name="iptv_ink_channel_url">http://tv.iptv.ink/iptv.ink</string>
+    <string name="iptv_ink_epg_url">http://epg.iptv.ink/iptv.epg.gz</string>
+    <string name="iptv_ink_logo_url">http://logo.iptv.ink/</string>
+
+    <string name="tv_input_setup_add_channel">Add Channels</string>
+    <string name="tv_input_setup_update_channel">Update Channels</string>
+    <string name="tv_input_setup_cancel">Cancel Setup</string>
+    <string name="tv_input_setup_in_progress">In Progress…</string>
+    <string name="tv_input_settings_browse_title">TV Inputs by Your Company</string>
+    <string name="feed_error_message">No feed. Check your connection!</string>
+</resources>
