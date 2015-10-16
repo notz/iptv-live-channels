@@ -17,14 +17,17 @@ import android.view.Surface;
 import android.view.View;
 import android.view.accessibility.CaptioningManager;
 
-import com.google.android.exoplayer.ExoPlaybackException;
 import com.google.android.exoplayer.ExoPlayer;
+import com.google.android.exoplayer.MediaFormat;
+import com.google.android.exoplayer.TimeRange;
+import com.google.android.exoplayer.chunk.Format;
 import com.google.android.exoplayer.text.CaptionStyleCompat;
 import com.google.android.exoplayer.text.Cue;
 import com.google.android.exoplayer.text.SubtitleLayout;
+import com.google.android.exoplayer.util.Util;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -32,7 +35,10 @@ import java.util.Set;
 import at.pansy.iptv.R;
 import at.pansy.iptv.domain.Channel;
 import at.pansy.iptv.domain.PlaybackInfo;
+import at.pansy.iptv.player.DashRendererBuilder;
+import at.pansy.iptv.player.HlsRendererBuilder;
 import at.pansy.iptv.player.TvInputPlayer;
+import at.pansy.iptv.util.RendererUtil;
 import at.pansy.iptv.util.SyncUtil;
 import at.pansy.iptv.util.TvContractUtil;
 
@@ -94,7 +100,7 @@ public class TvInputService extends android.media.tv.TvInputService {
         return session;
     }
 
-    class TvInputSession extends android.media.tv.TvInputService.Session implements Handler.Callback {
+    class TvInputSession extends Session implements Handler.Callback {
 
         private static final int MSG_PLAY_PROGRAM = 1000;
 
@@ -107,35 +113,74 @@ public class TvInputService extends android.media.tv.TvInputService {
         private PlaybackInfo currentPlaybackInfo;
         private TvContentRating lastBlockedRating;
         private TvContentRating currentContentRating;
-        private String celectedSubtitleTrackId;
+        private String selectedSubtitleTrackId;
         private SubtitleLayout subtitleLayout;
         private boolean epgSyncRequested;
         private final Set<TvContentRating> unblockedRatingSet = new HashSet<>();
         private final Handler handler;
 
-        private final TvInputPlayer.Callback playerCallback = new TvInputPlayer.Callback() {
+        private final TvInputPlayer.Listener playerListener = new TvInputPlayer.Listener() {
 
             private boolean firstFrameDrawn;
 
             @Override
             public void onPrepared() {
                 firstFrameDrawn = false;
+
+                Log.d(TAG, "on prepared");
+
+
                 List<TvTrackInfo> tracks = new ArrayList<>();
-                Collections.addAll(tracks, player.getTracks(TvTrackInfo.TYPE_AUDIO));
-                Collections.addAll(tracks, player.getTracks(TvTrackInfo.TYPE_VIDEO));
-                Collections.addAll(tracks, player.getTracks(TvTrackInfo.TYPE_SUBTITLE));
+                String audioSelected = null;
+                String videoSelected = null;
+                String subtitleSelected = null;
+
+                for (int i = 0; i < player.getTrackCount(TvInputPlayer.TYPE_AUDIO); i++) {
+                    MediaFormat format = player.getTrackFormat(TvInputPlayer.TYPE_AUDIO, i);
+                    Log.d(TAG, "audio track - " + format.channelCount + ", " + format.sampleRate);
+                    tracks.add(new TvTrackInfo.Builder(TvTrackInfo.TYPE_AUDIO,
+                            Integer.toString(i))
+                            .setAudioChannelCount(format.channelCount)
+                            .setAudioSampleRate(format.sampleRate)
+                            .setLanguage(format.language)
+                            .build());
+                    if (player.getSelectedTrack(TvInputPlayer.TYPE_AUDIO) == i) {
+                        audioSelected = Integer.toString(i);
+                    }
+                }
+
+                for (int i = 0; i < player.getTrackCount(TvInputPlayer.TYPE_VIDEO); i++) {
+                    MediaFormat format = player.getTrackFormat(TvInputPlayer.TYPE_VIDEO, i);
+                    Log.d(TAG, "video track - " + format.bitrate + ", " + format.mimeType);
+                    tracks.add(new TvTrackInfo.Builder(TvTrackInfo.TYPE_VIDEO,
+                            Integer.toString(i))
+                            .setVideoWidth(format.width)
+                            .setVideoHeight(format.height)
+                                    //.setVideoFrameRate(format.)
+                            .build());
+                    if (player.getSelectedTrack(TvInputPlayer.TYPE_VIDEO) == i) {
+                        videoSelected = Integer.toString(i);
+                    }
+                }
+
+                for (int i = 0; i < player.getTrackCount(TvInputPlayer.TYPE_TEXT); i++) {
+                    tracks.add(new TvTrackInfo.Builder(TvTrackInfo.TYPE_SUBTITLE,
+                            Integer.toString(i))
+                            .build());
+                    if (player.getSelectedTrack(TvInputPlayer.TYPE_TEXT) == i) {
+                        subtitleSelected = Integer.toString(i);
+                    }
+                }
 
                 notifyTracksChanged(tracks);
-                notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, player.getSelectedTrack(
-                        TvTrackInfo.TYPE_AUDIO));
-                notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, player.getSelectedTrack(
-                        TvTrackInfo.TYPE_VIDEO));
-                notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, player.getSelectedTrack(
-                        TvTrackInfo.TYPE_SUBTITLE));
+                notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, audioSelected);
+                notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, videoSelected);
+                notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, subtitleSelected);
             }
 
             @Override
-            public void onPlayerStateChanged(boolean playWhenReady, int playbackState) {
+            public void onStateChanged(boolean playWhenReady, int playbackState) {
+                Log.d(TAG, "onStateChanged - " + playWhenReady + ", " + playbackState);
                 if (playWhenReady && playbackState == ExoPlayer.STATE_BUFFERING) {
                     if (firstFrameDrawn) {
                         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING);
@@ -146,21 +191,22 @@ public class TvInputService extends android.media.tv.TvInputService {
             }
 
             @Override
-            public void onPlayWhenReadyCommitted() {
-                // Do nothing.
-            }
+            public void onError(Exception e) { }
 
             @Override
-            public void onPlayerError(ExoPlaybackException e) {
-                // Do nothing.
+            public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {
+
             }
 
             @Override
             public void onDrawnToSurface(Surface surface) {
+                Log.d(TAG, "onDrawnToSurface - " + surface);
                 firstFrameDrawn = true;
                 notifyVideoAvailable();
             }
+        };
 
+        TvInputPlayer.CaptionListener captionListener = new TvInputPlayer.CaptionListener() {
             @Override
             public void onCues(List<Cue> cues) {
                 if (subtitleLayout != null) {
@@ -217,7 +263,8 @@ public class TvInputService extends android.media.tv.TvInputService {
             captionStyle = CaptionStyleCompat.createFromCaptionStyle(
                     captioningManager.getUserStyle());
             subtitleLayout.setStyle(captionStyle);
-            subtitleLayout.setFractionalTextSize(captioningManager.getFontScale());
+            subtitleLayout.setFractionalTextSize(SubtitleLayout.DEFAULT_TEXT_SIZE_FRACTION
+                    * captioningManager.getFontScale());
             return view;
         }
 
@@ -244,17 +291,73 @@ public class TvInputService extends android.media.tv.TvInputService {
             currentPlaybackInfo = info;
             currentContentRating = (info.contentRatings == null || info.contentRatings.length == 0)
                     ? null : info.contentRatings[0];
-            player = new TvInputPlayer();
-            player.addCallback(playerCallback);
-            player.prepare(TvInputService.this, Uri.parse(info.videoUrl), info.videoType);
-            player.setSurface(surface);
-            player.setVolume(volume);
+
+            Log.d(TAG, "playProgram - " + info.videoUrl);
+
+            String userAgent = Util.getUserAgent(context, "IptvLiveChannels");
+            HashMap<String, String> httpHeaders = new HashMap<>();
+            String url = RendererUtil.processUrlParameters(info.videoUrl, httpHeaders);
+
+            TvInputPlayer.RendererBuilder rendererBuilder;
+            if (info.videoType == PlaybackInfo.VIDEO_TYPE_HLS) {
+                rendererBuilder = new HlsRendererBuilder(context, userAgent, url, httpHeaders);
+            } else {
+                rendererBuilder = new DashRendererBuilder(context, userAgent, info.videoUrl, null);
+            }
+
+            player = new TvInputPlayer(rendererBuilder);
+            player.addListener(playerListener);
+            player.setCaptionListener(captionListener);
+            player.setInfoListener(new TvInputPlayer.InfoListener() {
+                @Override
+                public void onVideoFormatEnabled(Format format, int trigger, long mediaTimeMs) {
+                    Log.d(TAG, "onVideoFormatEnabled - " + format.codecs);
+                }
+
+                @Override
+                public void onAudioFormatEnabled(Format format, int trigger, long mediaTimeMs) {
+                    Log.d(TAG, "onAudiFormatEnabled - " + format.codecs);
+                }
+
+                @Override
+                public void onDroppedFrames(int count, long elapsed) {
+                    Log.d(TAG, "onDroppedFrames - " + count);
+                }
+
+                @Override
+                public void onBandwidthSample(int elapsedMs, long bytes, long bitrateEstimate) {
+                    Log.d(TAG, "onBandwidthSample - " + bitrateEstimate);
+                }
+
+                @Override
+                public void onLoadStarted(int sourceId, long length, int type, int trigger, Format format, long mediaStartTimeMs, long mediaEndTimeMs) {
+                }
+
+                @Override
+                public void onLoadCompleted(int sourceId, long bytesLoaded, int type, int trigger, Format format, long mediaStartTimeMs, long mediaEndTimeMs, long elapsedRealtimeMs, long loadDurationMs) {
+                }
+
+                @Override
+                public void onDecoderInitialized(String decoderName, long elapsedRealtimeMs, long initializationDurationMs) {
+                    Log.d(TAG, "onDecoderInitialized - " + decoderName);
+                }
+
+                @Override
+                public void onAvailableRangeChanged(TimeRange availableRange) {
+                    Log.d(TAG, "onAvailableRangeChanged");
+
+                }
+            });
 
             long nowMs = System.currentTimeMillis();
             int seekPosMs = (int) (nowMs - info.startTimeMs);
             if (seekPosMs > 0) {
                 player.seekTo(seekPosMs);
             }
+
+            player.prepare();
+            player.setSurface(surface);
+            player.setVolume(volume);
             player.setPlayWhenReady(true);
 
             checkContentBlockNeeded();
@@ -281,11 +384,12 @@ public class TvInputService extends android.media.tv.TvInputService {
             captionEnabled = enabled;
             if (player != null) {
                 if (enabled) {
-                    if (celectedSubtitleTrackId != null) {
-                        player.selectTrack(TvTrackInfo.TYPE_SUBTITLE, celectedSubtitleTrackId);
+                    if (selectedSubtitleTrackId != null) {
+                        player.setSelectedTrack(TvTrackInfo.TYPE_SUBTITLE,
+                                Integer.parseInt(selectedSubtitleTrackId));
                     }
                 } else {
-                    player.selectTrack(TvTrackInfo.TYPE_SUBTITLE, null);
+                    player.setSelectedTrack(TvTrackInfo.TYPE_SUBTITLE, -1);
                 }
             }
         }
@@ -297,12 +401,13 @@ public class TvInputService extends android.media.tv.TvInputService {
                     if (!captionEnabled && trackId != null) {
                         return false;
                     }
-                    celectedSubtitleTrackId = trackId;
+                    selectedSubtitleTrackId = trackId;
                     if (trackId == null) {
                         subtitleLayout.setVisibility(View.INVISIBLE);
                     }
                 }
-                if (player.selectTrack(type, trackId)) {
+                if (trackId != null) {
+                    player.setSelectedTrack(type, Integer.parseInt(trackId));
                     notifyTrackSelected(type, trackId);
                     return true;
                 }
@@ -319,9 +424,9 @@ public class TvInputService extends android.media.tv.TvInputService {
 
         private void releasePlayer() {
             if (player != null) {
-                player.removeCallback(playerCallback);
+                player.setCaptionListener(null);
+                player.removeListener(playerListener);
                 player.setSurface(null);
-                player.stop();
                 player.release();
                 player = null;
             }
@@ -391,7 +496,7 @@ public class TvInputService extends android.media.tv.TvInputService {
                         url = channel.getInternalProviderData();
                     }
                     PlaybackInfo playbackInfo = new PlaybackInfo(nowMs, nowMs + 3600 * 1000l,
-                            url, 1, new TvContentRating[] {});
+                            url, PlaybackInfo.VIDEO_TYPE_HLS, new TvContentRating[] {});
                     programs.add(playbackInfo);
                 }
 
