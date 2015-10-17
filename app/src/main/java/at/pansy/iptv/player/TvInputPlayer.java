@@ -23,6 +23,7 @@ import android.media.tv.TvTrackInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
+import android.util.Log;
 import android.view.Surface;
 
 import com.google.android.exoplayer.DefaultLoadControl;
@@ -35,14 +36,12 @@ import com.google.android.exoplayer.MediaCodecAudioTrackRenderer;
 import com.google.android.exoplayer.MediaCodecTrackRenderer;
 import com.google.android.exoplayer.MediaCodecUtil;
 import com.google.android.exoplayer.MediaCodecVideoTrackRenderer;
-import com.google.android.exoplayer.SampleSource;
 import com.google.android.exoplayer.TrackRenderer;
-import com.google.android.exoplayer.audio.AudioCapabilities;
 import com.google.android.exoplayer.chunk.ChunkSampleSource;
 import com.google.android.exoplayer.chunk.ChunkSource;
 import com.google.android.exoplayer.chunk.Format;
 import com.google.android.exoplayer.chunk.FormatEvaluator;
-//import com.google.android.exoplayer.chunk.MultiTrackChunkSource;
+import com.google.android.exoplayer.chunk.VideoFormatSelectorUtil;
 import com.google.android.exoplayer.dash.DashChunkSource;
 import com.google.android.exoplayer.dash.DefaultDashTrackSelector;
 import com.google.android.exoplayer.dash.mpd.AdaptationSet;
@@ -52,9 +51,11 @@ import com.google.android.exoplayer.dash.mpd.Period;
 import com.google.android.exoplayer.dash.mpd.Representation;
 import com.google.android.exoplayer.extractor.ExtractorSampleSource;
 import com.google.android.exoplayer.hls.HlsChunkSource;
+import com.google.android.exoplayer.hls.HlsMasterPlaylist;
 import com.google.android.exoplayer.hls.HlsPlaylist;
 import com.google.android.exoplayer.hls.HlsPlaylistParser;
 import com.google.android.exoplayer.hls.HlsSampleSource;
+import com.google.android.exoplayer.hls.Variant;
 import com.google.android.exoplayer.text.Cue;
 import com.google.android.exoplayer.text.TextRenderer;
 import com.google.android.exoplayer.text.eia608.Eia608TrackRenderer;
@@ -65,7 +66,6 @@ import com.google.android.exoplayer.upstream.DefaultHttpDataSource;
 import com.google.android.exoplayer.upstream.DefaultUriDataSource;
 import com.google.android.exoplayer.util.ManifestFetcher;
 import com.google.android.exoplayer.util.MimeTypes;
-import com.google.android.exoplayer.util.Util;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -107,8 +107,6 @@ public class TvInputPlayer implements TextRenderer {
     private Long pendingSeekPosition;
     private final TvTrackInfo[][] tvTracks = new TvTrackInfo[RENDERER_COUNT][];
     private final int[] selectedTvTracks = new int[RENDERER_COUNT];
-    //private final MultiTrackChunkSource[] multiTrackChunkSources =
-    //        new MultiTrackChunkSource[RENDERER_COUNT];
 
     private final MediaCodecVideoTrackRenderer.EventListener videoRendererEventListener =
             new MediaCodecVideoTrackRenderer.EventListener() {
@@ -219,9 +217,44 @@ public class TvInputPlayer implements TextRenderer {
                         @Override
                         public void onSingleManifest(HlsPlaylist manifest) {
                             DefaultBandwidthMeter bandwidthMeter = new DefaultBandwidthMeter();
-                            HlsChunkSource chunkSource = new HlsChunkSource(dataSource,
-                                    uri.toString(), manifest, bandwidthMeter, null,
-                                    HlsChunkSource.ADAPTIVE_MODE_SPLICE);
+
+                            int[] variantIndices = null;
+                            if (manifest instanceof HlsMasterPlaylist) {
+                                HlsMasterPlaylist masterPlaylist = (HlsMasterPlaylist) manifest;
+
+                                // Sort playlist from highest bitrate to lowest
+                                ArrayList<Variant> variants = new ArrayList<>(masterPlaylist.variants);
+                                Collections.sort(variants, new Comparator<Variant>() {
+                                    @Override
+                                    public int compare(Variant v1, Variant v2) {
+                                        return Integer.compare(v2.format.bitrate, v1.format.bitrate);
+                                    }
+                                });
+                                manifest = masterPlaylist = new HlsMasterPlaylist(masterPlaylist.baseUri,
+                                        variants, masterPlaylist.subtitles);
+
+                                try {
+                                    variantIndices = VideoFormatSelectorUtil.selectVideoFormatsForDefaultDisplay(
+                                            context, masterPlaylist.variants, null, false);
+                                } catch (MediaCodecUtil.DecoderQueryException e) {
+                                    for (Callback callback : callbacks) {
+                                        callback.onPlayerError(new ExoPlaybackException(e));
+                                    }
+                                    return;
+                                }
+                                if (variantIndices.length == 0) {
+                                    for (Callback callback : callbacks) {
+                                        callback.onPlayerError(new ExoPlaybackException(
+                                                new IllegalStateException("No variants selected.")));
+                                    }
+                                    return;
+                                }
+                            }
+
+                            HlsChunkSource chunkSource = new HlsChunkSource(dataSource, uri.toString(),
+                                    manifest, bandwidthMeter,
+                                    variantIndices, HlsChunkSource.ADAPTIVE_MODE_SPLICE);
+
                             LoadControl lhc = new DefaultLoadControl(new DefaultAllocator(BUFFER_SEGMENT_SIZE));
                             HlsSampleSource sampleSource = new HlsSampleSource(chunkSource, lhc, BUFFER_SEGMENTS * BUFFER_SEGMENT_SIZE);
                             audioRenderer = new MediaCodecAudioTrackRenderer(sampleSource);
@@ -272,12 +305,6 @@ public class TvInputPlayer implements TextRenderer {
                                     AdaptationSet.TYPE_VIDEO);
                             List<Representation> videoRepresentations =
                                     period.adaptationSets.get(videoAdaptationSetIndex).representations;
-                            Collections.sort(videoRepresentations, new Comparator<Representation>() {
-                                @Override
-                                public int compare(Representation r1, Representation r2) {
-                                    return Integer.compare(r2.format.bitrate, r1.format.bitrate);
-                                }
-                            });
                             ArrayList<Integer> videoRepresentationIndexList = new ArrayList<>();
                             for (int i = 0; i < videoRepresentations.size(); i++) {
                                 Format format = videoRepresentations.get(i).format;
